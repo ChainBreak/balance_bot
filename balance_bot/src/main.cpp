@@ -16,6 +16,7 @@ const int pin_enable = 8;
 
 const float full_scale_accel = 4.0f / 32768.0f;
 const float full_scale_gyro = 1000.0f / 32768.0f;
+const float step_per_deg = 4.0f / 1.8f;
 
 
 MPU9150 mpu;
@@ -23,8 +24,9 @@ ContinuousStepper stepper_a;
 ContinuousStepper stepper_b;
 
 float angle_deg_setpoint = 0.0;
+float wheel_speed_deg_setpoint = 0.0;
 
-float wheel_speed = 0.0;
+float wheel_speed_deg = 0.0;
 
 void stepper_callback()
 {
@@ -55,12 +57,7 @@ void setup() {
   Timer1.attachInterrupt(stepper_callback);
 
   pinMode(pin_enable,OUTPUT);
-  // pinMode(pin_step_x,OUTPUT);
-  // pinMode(pin_step_z,OUTPUT);
   digitalWrite(pin_enable,LOW);
-
-  // tone(pin_step_x,1000,0);
-  // tone(pin_step_z,1000,0);
 
 }
 
@@ -96,18 +93,10 @@ void read_angle_and_rate_from_mpu(float* angle_deg, float* angle_rate_deg)
   *angle_deg = atan2(accel_g_y,accel_g_z) *180 / PI;
 }
 
-float calculate_balance_angle_rate_simple(float angle_error_deg)
-{
-  float angle_rate_deg = -angle_error_deg*2.0f;
-  angle_rate_deg = constrain(angle_rate_deg,-10,10);
-  return angle_rate_deg;
-}
-
-
-
-
 float calculate_balance_angle_rate(float angle_error_deg)
 {
+  //converts the angle error into a angle rate target that should stand the bot back up
+
   const float C = 123.0f; //Constant found from fall test
 
   float angle_rate_rad = sqrt(C*(1.0f-cos(radians(angle_error_deg))));
@@ -140,34 +129,43 @@ void loop() {
 
   float filtered_angle = complementary_filter(angle_deg, angle_rate_deg, dt);
 
-  float angle_error_deg = filtered_angle - angle_deg_setpoint;
+  float wheel_speed_error_deg = wheel_speed_deg_setpoint - wheel_speed_deg;
+
+  float angle_deg_setpoint_offset = 0.01*wheel_speed_error_deg;
+  angle_deg_setpoint_offset = constrain(angle_deg_setpoint_offset,-5,5);
+  angle_deg_setpoint += 0.001 * wheel_speed_error_deg*dt;
+
+  float angle_deg_target = angle_deg_setpoint + angle_deg_setpoint_offset;
+
+  float angle_error_deg = filtered_angle - angle_deg_target;
 
   float angle_rate_deg_setpoint = calculate_balance_angle_rate(angle_error_deg);
 
-  float angle_rate_deg_error = angle_rate_deg - angle_rate_deg_setpoint;
+  float angle_rate_deg_error = angle_rate_deg - angle_rate_deg_setpoint; 
 
-  // angle_rate_deg_error = constrain(angle_rate_deg_error,-90,90);
+  float wheel_acceleration = 54 * angle_rate_deg_error;
 
-  wheel_speed += 120.0 * angle_rate_deg_error*dt;
+  wheel_acceleration = constrain(wheel_acceleration,-2882,2882);
 
-  wheel_speed = constrain(wheel_speed,-3200,3200);
-
+  wheel_speed_deg += wheel_acceleration*dt;
+  const float wheel_speed_deg_limit = 360*5;
+  wheel_speed_deg = constrain(wheel_speed_deg,-wheel_speed_deg_limit,wheel_speed_deg_limit);
   
-  angle_deg_setpoint -= 0.1 * sign(wheel_speed);
+  // angle_deg_setpoint -= 0.1 * sign(wheel_speed);
 
   bool enable_wheels = abs(filtered_angle) < 45;
 
   digitalWrite(pin_enable,!enable_wheels); 
 
   if (!enable_wheels){
-    wheel_speed = 0.0;
+    wheel_speed_deg = 0.0;
     angle_deg_setpoint=0.0;
   }
 
 
   noInterrupts();
-  stepper_a.spin(-wheel_speed);
-  stepper_b.spin(wheel_speed);
+  stepper_a.spin(-wheel_speed_deg*step_per_deg);
+  stepper_b.spin(wheel_speed_deg*step_per_deg);
   interrupts();
 
   Serial.print(angle_deg_setpoint); Serial.print("\t");
